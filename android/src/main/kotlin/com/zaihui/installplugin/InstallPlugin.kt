@@ -8,10 +8,14 @@ import android.os.Build
 import android.provider.Settings
 import android.util.Log
 import androidx.core.content.FileProvider
+import io.flutter.embedding.engine.plugins.FlutterPlugin
+import io.flutter.embedding.engine.plugins.activity.ActivityAware
+import io.flutter.embedding.engine.plugins.activity.ActivityPluginBinding
 import io.flutter.plugin.common.MethodCall
 import io.flutter.plugin.common.MethodChannel
 import io.flutter.plugin.common.MethodChannel.MethodCallHandler
 import io.flutter.plugin.common.MethodChannel.Result
+import io.flutter.plugin.common.PluginRegistry
 import io.flutter.plugin.common.PluginRegistry.Registrar
 import java.io.File
 import java.io.FileNotFoundException
@@ -22,37 +26,30 @@ import java.io.FileNotFoundException
  * @property registrar Registrar
  * @constructor
  */
-class InstallPlugin(private val registrar: Registrar) : MethodCallHandler {
+class InstallPlugin : FlutterPlugin, ActivityAware, MethodCallHandler, PluginRegistry.ActivityResultListener {
+
+    var act: Activity? = null
+    var binding: ActivityPluginBinding? = null
+    lateinit var channel: MethodChannel
+
     companion object {
-        private const val installRequestCode = 1234
+        private const val METHOD_CHANNEL = "com.zaihui.installplugin/install_plugin"
+        private val installRequestCode = 1234
         private var apkFile: File? = null
         private var appId: String? = null
 
         @JvmStatic
-        fun registerWith(registrar: Registrar): Unit { 
-            val channel = MethodChannel(registrar.messenger(), "install_plugin")
-            val installPlugin = InstallPlugin(registrar)
-            channel.setMethodCallHandler(installPlugin)
-            registrar.addActivityResultListener { requestCode, resultCode, intent ->
-                Log.d(
-                    "ActivityResultListener",
-                    "requestCode=$requestCode, resultCode = $resultCode, intent = $intent"
-                )
-                if (resultCode == Activity.RESULT_OK && requestCode == installRequestCode) {
-                    installPlugin.install24(registrar.context(), apkFile, appId)
-                    true
-                } else
-
-                false
-            }
+        fun registerWith(registrar: Registrar) {
+            val installPlugin = InstallPlugin()
+            installPlugin.act = registrar.activity()
+            registrar.addActivityResultListener(installPlugin)
+            installPlugin.channel = MethodChannel(registrar.messenger(), METHOD_CHANNEL)
+            installPlugin.channel.setMethodCallHandler(installPlugin)
         }
     }
 
     override fun onMethodCall(call: MethodCall, result: Result) {
         when (call.method) {
-            "getPlatformVersion" -> {
-                result.success("Android ${android.os.Build.VERSION.RELEASE}")
-            }
             "installApk" -> {
                 val filePath = call.argument<String>("filePath")
                 val appId = call.argument<String>("appId")
@@ -70,23 +67,23 @@ class InstallPlugin(private val registrar: Registrar) : MethodCallHandler {
 
     private fun installApk(filePath: String?, currentAppId: String?) {
         if (filePath == null) throw NullPointerException("fillPath is null!")
-        val activity: Activity =
-            registrar.activity() ?: throw NullPointerException("context is null!")
-
+        if (act == null) {
+            throw NullPointerException("context is null!")
+        }
         val file = File(filePath)
         if (!file.exists()) throw FileNotFoundException("$filePath is not exist! or check permission")
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.N) {
-            if (canRequestPackageInstalls(activity)) install24(activity, file, currentAppId)
-            else {
-                showSettingPackageInstall(activity)
+            if (canRequestPackageInstalls(act!!)) {
+                install24(act, file, currentAppId)
+            } else {
+                showSettingPackageInstall(act!!)
                 apkFile = file
                 appId = currentAppId
             }
         } else {
-            installBelow24(activity, file)
+            installBelow24(act!!, file)
         }
     }
-
 
     private fun showSettingPackageInstall(activity: Activity) { // todo to test with android 26
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
@@ -129,5 +126,49 @@ class InstallPlugin(private val registrar: Registrar) : MethodCallHandler {
         val uri: Uri = FileProvider.getUriForFile(context, "$appId.fileProvider.install", file)
         intent.setDataAndType(uri, "application/vnd.android.package-archive")
         context.startActivity(intent)
+    }
+
+    override fun onActivityResult(requestCode: Int, resultCode: Int, data: Intent?): Boolean {
+        Log.d(
+            "ActivityResultListener",
+            "requestCode=$requestCode, resultCode = $resultCode, intent = $data"
+        )
+        if (act == null || resultCode != Activity.RESULT_OK || requestCode != installRequestCode) {
+            return false
+        }
+        install24(act, apkFile, appId)
+        return true
+
+    }
+
+    override fun onAttachedToEngine(binding: FlutterPlugin.FlutterPluginBinding) {
+        channel = MethodChannel(binding.binaryMessenger, METHOD_CHANNEL)
+        channel.setMethodCallHandler(this)
+    }
+
+    override fun onDetachedFromEngine(binding: FlutterPlugin.FlutterPluginBinding) {
+        channel.setMethodCallHandler(null)
+    }
+
+    override fun onAttachedToActivity(binding: ActivityPluginBinding) {
+        this.binding = binding
+        act = binding.activity
+        binding.addActivityResultListener(this)
+    }
+
+    override fun onDetachedFromActivityForConfigChanges() {
+        binding?.removeActivityResultListener(this)
+        binding = null
+    }
+
+    override fun onReattachedToActivityForConfigChanges(binding: ActivityPluginBinding) {
+        this.binding = binding
+        act = binding.activity
+        binding.addActivityResultListener(this)
+    }
+
+    override fun onDetachedFromActivity() {
+        binding?.removeActivityResultListener(this)
+        binding = null
     }
 }

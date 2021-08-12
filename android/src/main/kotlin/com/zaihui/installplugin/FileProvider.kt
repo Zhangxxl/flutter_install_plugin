@@ -1,4 +1,5 @@
-package com.zaihui.installplugin;
+package com.zaihui.installplugin
 
-public class FileProvider extends androidx.core.content.FileProvider {
-}
+import androidx.core.content.FileProvider
+
+class FileProvider : FileProvider()
